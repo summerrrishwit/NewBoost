@@ -8,8 +8,12 @@ from transformers import pipeline
 def load_models():
 	"""Load sentiment analysis models"""
 	try:
-		hf_analyzer = pipeline("sentiment-analysis", 
-								model="cardiffnlp/twitter-roberta-base-sentiment-latest")
+		# hf_model_name = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+		# hf_model_name = "/path/to/local/sentiment-model"  # 本地模型目录示例（需提前下载好模型）
+		hf_analyzer = pipeline(
+			"sentiment-analysis",
+			model="cardiffnlp/twitter-roberta-base-sentiment-latest",
+		)
 		return hf_analyzer, True
 	except Exception as e:
 		st.warning(f"Advanced sentiment model not available, using VADER\n\nReason:\n{e}")

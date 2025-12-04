@@ -115,6 +115,86 @@ NewsBoost/
 
 ---
 
+## 🎯 模型训练功能（train_sentiment_model/）
+
+项目包含完整的情感分析模型训练模块，支持在多个数据集上训练和评估模型。
+
+### 训练特性
+
+- **自动GPU检测与多GPU支持**：
+  - 自动检测系统中所有可用的GPU设备
+  - 多GPU环境下使用 `DataParallel` 进行并行训练
+  - 单GPU时自动使用该GPU，无GPU时回退到CPU训练
+  - 根据GPU数量自动调整batch size和dataloader workers数量
+
+- **Checkpoint保存策略**：
+  - 训练过程中按步数保存checkpoint（`save_steps`）
+  - 保留最近3个checkpoint（`save_total_limit=3`），避免磁盘空间浪费
+  - 训练结束后自动加载最佳模型（`load_best_model_at_end=True`）
+  - **自动保存最佳模型**：训练完成后，最佳模型会自动保存到独立的 `*_best_model` 目录
+  - 最佳模型目录包含模型权重、tokenizer和训练参数配置
+
+- **支持的数据集**：
+  - **Twitter Sentiment**：三分类情感分析（negative/neutral/positive）
+  - **SST-2**：二分类情感分析（negative/positive）
+  - **Amazon Reviews**：二分类情感分析（negative/positive）
+
+- **支持的模型**：
+  - BERT (`bert-base-uncased`)
+  - DeBERTa (`microsoft/deberta-base`)
+  - RoBERTa (`roberta-base`)
+
+### 训练示例
+
+```bash
+# 运行单个数据集实验
+cd train_sentiment_model
+python twitter_sentiment_experiment.py
+python sst2_experiment.py
+python amazon_experiment.py
+
+# 或运行所有实验
+python run_all_experiments.py
+```
+
+### GPU使用说明
+
+训练脚本会自动检测并利用所有可用GPU：
+
+- **多GPU训练**：如果检测到多个GPU，会自动使用 `torch.nn.DataParallel` 进行数据并行训练
+- **单GPU训练**：单个GPU时直接使用该GPU
+- **CPU训练**：无GPU时自动回退到CPU（batch size会自动减小）
+
+训练开始时会输出GPU信息：
+```
+检测到 2 个GPU设备:
+  GPU 0: NVIDIA GeForce RTX 3090 (24.00 GB)
+  GPU 1: NVIDIA GeForce RTX 3090 (24.00 GB)
+使用 2 个GPU进行训练 (DataParallel)
+```
+
+### 模型保存说明
+
+训练完成后，模型会保存在以下位置：
+
+1. **训练checkpoint目录** (`*_results/`)：
+   - 包含训练过程中的checkpoint文件
+   - 保留最近3个checkpoint（包含最佳模型checkpoint）
+
+2. **最佳模型目录** (`*_best_model/`)：
+   - 自动保存训练过程中表现最好的模型
+   - 包含完整的模型权重、tokenizer和配置
+   - 可直接用于推理部署
+
+3. **最终模型目录** (`*_model/`)：
+   - 保存训练结束时的最终模型状态
+
+### 评估结果
+
+每个实验的评估结果（accuracy、F1-score、分类报告等）会保存在对应的 `results/` 子目录中的 `evaluation_results.json` 文件中。
+
+---
+
 ## 🔄 可扩展性
 
 - 数据源：接入更多 RSS / API（注意使用条款）
@@ -131,10 +211,3 @@ NewsBoost/
 - 模型加载失败会触发 `st.warning`，同时降级至 VADER 或跳过摘要模块。
 - 当过滤结果为空、摘要输入过短或词云词表不足时，界面会给出可操作的提示语句，引导调参。
 - 所有网络请求使用共享 `requests.Session` 与 UA 设置，可在 `collector.py` 中扩展重试和节流策略。
-
----
-
-## 📄 许可与致谢
-
-- 授权协议：MIT（详见根目录 `LICENSE`）
-- 依赖与感谢：Streamlit、Hugging Face Transformers、VADER、Plotly、WordCloud、feedparser 等开源社区
