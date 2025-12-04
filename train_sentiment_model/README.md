@@ -57,7 +57,7 @@
 
 #### 代码结构优势
 
-通过继承 `experiment_utils.BaseSentimentTrainer`，三个实验脚本的代码量大幅减少（从~370行减少到~100行），主要优势：
+通过继承 `experiment_utils.BaseSentimentTrainer`，三个实验脚本的代码量大幅减少，主要优势：
 
 1. **代码复用**：公共逻辑（GPU设置、模型加载、训练流程等）只需维护一份
 2. **易于扩展**：新增数据集实验只需继承基类并实现 `load_data()` 和 `get_target_names()`
@@ -290,5 +290,3 @@ if __name__ == "__main__":
   2. 在其中实现对应的 `load_data` 逻辑（使用 `datasets.load_dataset`），并统一返回包含 `text` 和 `label` 的 DataFrame；
   3. 继续复用现有的 `tokenize_data` / `train` / `evaluate` / `save_model` / `save_evaluation_results` 逻辑。
 - 对于更详细的实验方案和结果分析，请阅读 `EXPERIMENTS_README.md`，那里可以记录你后续补充的图表、表格和结论。
-
-
