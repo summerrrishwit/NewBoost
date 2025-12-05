@@ -4,6 +4,7 @@
 通用实验工具函数和基础训练器类：
 - 全局随机种子设置
 - 评估结果统一保存
+- 本地数据集加载（支持CSV、JSON、JSONL格式）
 - 基础训练器类（BaseSentimentTrainer）
 """
 
@@ -28,6 +29,7 @@ from transformers import (
 )
 from datasets import Dataset, DatasetDict
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
 
 from model_config import get_model_path
 from gpu_utils import get_available_gpus, setup_multi_gpu
@@ -37,6 +39,142 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 # ==================== 实验工具函数 ====================
+
+def load_local_dataset(train_path, test_path=None, text_column='text', label_column='label', 
+                       label_mapping=None, file_format='auto'):
+    """
+    从本地文件加载数据集
+    
+    Args:
+        train_path: 训练集文件路径（CSV或JSON）
+        test_path: 测试集文件路径（CSV或JSON），如果为None则从train_path中分割
+        text_column: 文本列名（默认'text'）
+        label_column: 标签列名（默认'label'）
+        label_mapping: 标签映射字典，例如 {'positive': 1, 'negative': 0} 或 {'negative': 0, 'neutral': 1, 'positive': 2}
+        file_format: 文件格式，'auto'（自动检测）、'csv'或'json'
+        
+    Returns:
+        train_df, test_df: 训练集和测试集的DataFrame
+    """
+    import json
+    from pathlib import Path
+    
+    # 自动检测文件格式
+    if file_format == 'auto':
+        train_ext = Path(train_path).suffix.lower()
+        if train_ext == '.csv':
+            file_format = 'csv'
+        elif train_ext in ['.json', '.jsonl']:
+            file_format = 'json'
+        else:
+            raise ValueError(f"无法自动检测文件格式，请指定file_format参数。支持格式: .csv, .json, .jsonl")
+    
+    # 读取训练集
+    logger.info(f"从本地文件加载训练集: {train_path} (格式: {file_format})")
+    if file_format == 'csv':
+        train_df = pd.read_csv(train_path)
+    elif file_format == 'json':
+        if Path(train_path).suffix.lower() == '.jsonl':
+            # JSONL格式：每行一个JSON对象
+            train_data = []
+            with open(train_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    train_data.append(json.loads(line.strip()))
+            train_df = pd.DataFrame(train_data)
+        else:
+            # 标准JSON格式
+            with open(train_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                train_df = pd.DataFrame(data)
+            elif isinstance(data, dict) and 'data' in data:
+                train_df = pd.DataFrame(data['data'])
+            else:
+                raise ValueError("JSON文件格式不正确，应为列表或包含'data'键的字典")
+    else:
+        raise ValueError(f"不支持的文件格式: {file_format}")
+    
+    # 检查必需的列
+    if text_column not in train_df.columns:
+        raise ValueError(f"训练集中未找到文本列: {text_column}。可用列: {train_df.columns.tolist()}")
+    if label_column not in train_df.columns:
+        raise ValueError(f"训练集中未找到标签列: {label_column}。可用列: {train_df.columns.tolist()}")
+    
+    # 处理标签映射
+    if label_mapping:
+        # 将标签映射为数字
+        train_df['label'] = train_df[label_column].map(label_mapping)
+        if train_df['label'].isna().any():
+            missing_labels = train_df[train_df['label'].isna()][label_column].unique()
+            raise ValueError(f"训练集中存在未映射的标签: {missing_labels}")
+    else:
+        # 如果没有提供映射，尝试将标签转换为数字
+        if train_df[label_column].dtype == 'object':
+            unique_labels = sorted(train_df[label_column].unique())
+            label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
+            logger.info(f"自动创建标签映射: {label_mapping}")
+            train_df['label'] = train_df[label_column].map(label_mapping)
+        else:
+            train_df['label'] = train_df[label_column]
+    
+    # 重命名文本列
+    train_df = train_df.rename(columns={text_column: 'text'})
+    
+    # 读取测试集
+    if test_path:
+        logger.info(f"从本地文件加载测试集: {test_path} (格式: {file_format})")
+        if file_format == 'csv':
+            test_df = pd.read_csv(test_path)
+        elif file_format == 'json':
+            if Path(test_path).suffix.lower() == '.jsonl':
+                test_data = []
+                with open(test_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        test_data.append(json.loads(line.strip()))
+                test_df = pd.DataFrame(test_data)
+            else:
+                with open(test_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    test_df = pd.DataFrame(data)
+                elif isinstance(data, dict) and 'data' in data:
+                    test_df = pd.DataFrame(data['data'])
+                else:
+                    raise ValueError("JSON文件格式不正确")
+        
+        # 检查测试集的列
+        if text_column not in test_df.columns:
+            raise ValueError(f"测试集中未找到文本列: {text_column}")
+        if label_column not in test_df.columns:
+            raise ValueError(f"测试集中未找到标签列: {label_column}")
+        
+        # 应用相同的标签映射
+        if label_mapping:
+            test_df['label'] = test_df[label_column].map(label_mapping)
+        else:
+            if test_df[label_column].dtype == 'object':
+                test_df['label'] = test_df[label_column].map(label_mapping)
+            else:
+                test_df['label'] = test_df[label_column]
+        
+        test_df = test_df.rename(columns={text_column: 'text'})
+    else:
+        # 如果没有提供测试集，从训练集中分割（80/20）
+        logger.info("未提供测试集，从训练集中分割（80%训练，20%测试）")
+        train_df, test_df = train_test_split(train_df, test_size=0.2, random_state=42, stratify=train_df['label'])
+        train_df = train_df.reset_index(drop=True)
+        test_df = test_df.reset_index(drop=True)
+    
+    # 确保只保留需要的列
+    train_df = train_df[['text', 'label']].copy()
+    test_df = test_df[['text', 'label']].copy()
+    
+    logger.info(f"训练集大小: {len(train_df)}")
+    logger.info(f"测试集大小: {len(test_df)}")
+    logger.info(f"标签分布:\n{train_df['label'].value_counts().sort_index()}")
+    
+    return train_df, test_df
+
 
 @dataclass
 class EvalMeta:

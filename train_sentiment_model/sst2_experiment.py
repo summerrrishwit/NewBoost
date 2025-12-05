@@ -9,7 +9,7 @@ import os
 import logging
 import pandas as pd
 from datasets import load_dataset
-from experiment_utils import BaseSentimentTrainer
+from experiment_utils import BaseSentimentTrainer, load_local_dataset
 from model_config import get_available_models
 
 logging.basicConfig(level=logging.INFO)
@@ -24,9 +24,38 @@ class SentimentTrainer(BaseSentimentTrainer):
     def __init__(self, model_name, num_labels=2):
         super().__init__(model_name, num_labels, "SST-2")
         
-    def load_data(self):
-        """加载SST-2数据集"""
-        logger.info("正在加载SST-2数据集...")
+    def load_data(self, train_path=None, test_path=None, 
+                  text_column='text', label_column='label', file_format='auto'):
+        """
+        加载SST-2数据集
+        
+        Args:
+            train_path: 本地训练集文件路径（CSV或JSON），如果提供则从本地读取
+            test_path: 本地测试集文件路径（CSV或JSON），如果提供则从本地读取
+            text_column: 本地文件的文本列名（默认'text'）
+            label_column: 本地文件的标签列名（默认'label'）
+            file_format: 本地文件格式，'auto'（自动检测）、'csv'或'json'
+        
+        Returns:
+            train_df, test_df: 训练集和测试集的DataFrame
+        """
+        # 如果提供了本地文件路径，从本地读取
+        if train_path:
+            logger.info("从本地文件加载SST-2数据集...")
+            # SST-2二分类标签映射
+            label_mapping = {'negative': 0, 'positive': 1}
+            train_df, test_df = load_local_dataset(
+                train_path=train_path,
+                test_path=test_path,
+                text_column=text_column,
+                label_column=label_column,
+                label_mapping=label_mapping,
+                file_format=file_format
+            )
+            return train_df, test_df
+        
+        # 否则从Hugging Face加载
+        logger.info("从Hugging Face加载SST-2数据集...")
         dataset = load_dataset("glue", "sst2")
         
         def convert_labels(example):

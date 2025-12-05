@@ -13,9 +13,8 @@ import pandas as pd
 from datasets import load_dataset
 from sklearn.metrics import classification_report
 from sklearn.preprocessing import LabelEncoder
-from experiment_utils import BaseSentimentTrainer
+from experiment_utils import BaseSentimentTrainer, load_local_dataset, EvalMeta, save_evaluation_results
 from model_config import get_available_models
-from experiment_utils import EvalMeta, save_evaluation_results
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,9 +29,42 @@ class AmazonReviewsTrainer(BaseSentimentTrainer):
         super().__init__(model_name, num_labels, "Amazon Reviews")
         self.label_encoder = None
         
-    def load_data(self, sample_size=10000):
-        """加载Amazon Reviews数据集"""
-        logger.info("正在加载Amazon Reviews数据集 (amazon_polarity)...")
+    def load_data(self, sample_size=10000, train_path=None, test_path=None,
+                  text_column='text', label_column='label', file_format='auto'):
+        """
+        加载Amazon Reviews数据集
+        
+        Args:
+            sample_size: 从Hugging Face数据集采样的大小（仅当使用HF数据集时）
+            train_path: 本地训练集文件路径（CSV或JSON），如果提供则从本地读取
+            test_path: 本地测试集文件路径（CSV或JSON），如果提供则从本地读取
+            text_column: 本地文件的文本列名（默认'text'）
+            label_column: 本地文件的标签列名（默认'label'）
+            file_format: 本地文件格式，'auto'（自动检测）、'csv'或'json'
+        
+        Returns:
+            train_df, test_df: 训练集和测试集的DataFrame
+        """
+        # 如果提供了本地文件路径，从本地读取
+        if train_path:
+            logger.info("从本地文件加载Amazon Reviews数据集...")
+            # Amazon二分类标签映射
+            label_mapping = {'negative': 0, 'positive': 1}
+            train_df, test_df = load_local_dataset(
+                train_path=train_path,
+                test_path=test_path,
+                text_column=text_column,
+                label_column=label_column,
+                label_mapping=label_mapping,
+                file_format=file_format
+            )
+            # 创建标签编码器
+            self.label_encoder = LabelEncoder()
+            self.label_encoder.fit([0, 1])
+            return train_df, test_df
+        
+        # 否则从Hugging Face加载
+        logger.info("从Hugging Face加载Amazon Reviews数据集 (amazon_polarity)...")
         dataset = load_dataset("amazon_polarity")
 
         def combine_text(example):

@@ -48,9 +48,11 @@
 #### 工具模块
 
 - **`run_all_experiments.py`**: （可选）统一入口脚本，用于批量运行多模型、多数据集实验。
-- **`experiment_utils.py`**: 公共工具函数：
+- **`experiment_utils.py`**: 公共工具函数和基础训练器类：
   - **`set_global_seed`**: 统一设置随机种子，保证实验可复现。
+  - **`load_local_dataset`**: 从本地文件加载数据集（支持CSV、JSON、JSONL格式）。
   - **`save_evaluation_results`**: 统一保存评估结果（accuracy、macro/weighted F1、完整 `classification_report`、混淆矩阵、预测/真实标签等）。
+  - **`BaseSentimentTrainer`**: 基础训练器类，包含所有公共的训练逻辑。
 - **`model_config.py`**: 管理本地模型路径及可用模型列表（`get_model_path` / `get_available_models`）。
 - **`results/`**: 各实验运行完后的结果目录，包含 JSON 评估文件和保存的模型。
 - **`EXPERIMENTS_README.md`**: 详细实验说明文档（中文），包括设计思路、实验设置和部分结果总结。
@@ -94,22 +96,79 @@ pip install peft
 
 ### 数据集说明
 
+#### 数据源支持
+
+所有实验脚本支持两种数据加载方式：
+
+1. **Hugging Face数据集**（默认）：自动从Hugging Face下载数据集
+2. **本地文件**：从本地CSV或JSON文件读取数据集
+
+#### 数据集详情
+
 - **Amazon Reviews (binary)**  
   - 脚本：`amazon_experiment.py`  
-  - 数据源：`amazon_polarity`（Hugging Face Datasets）  
+  - Hugging Face数据源：`amazon_polarity`  
   - 标签：`0 = negative`, `1 = positive`
 
 - **Twitter Sentiment (3‑class)**  
   - 脚本：`twitter_sentiment_experiment.py`  
-  - 数据源：`tweet_eval`, 子任务 `"sentiment"`  
+  - Hugging Face数据源：`tweet_eval`, 子任务 `"sentiment"`  
   - 标签：`0 = negative`, `1 = neutral`, `2 = positive`
 
 - **SST‑2 (binary)**  
   - 脚本：`sst2_experiment.py`  
-  - 数据源：`glue`, 子任务 `"sst2"`  
+  - Hugging Face数据源：`glue`, 子任务 `"sst2"`  
   - 标签：`0 = negative`, `1 = positive`
 
-所有脚本都会在内部自动调用 `datasets.load_dataset(...)` 下载数据集，无需手动预处理。
+#### 使用本地文件
+
+所有实验脚本的 `load_data()` 方法支持从本地文件读取数据：
+
+**CSV格式示例**：
+```python
+trainer_obj = TwitterSentimentTrainer(model_name, num_labels=3)
+train_df, test_df = trainer_obj.load_data(
+    train_path="./data/train.csv",
+    test_path="./data/test.csv",
+    text_column='text',      # 文本列名
+    label_column='label',    # 标签列名（可以是字符串标签如'negative'/'positive'，或数字）
+    file_format='csv'        # 或'auto'自动检测
+)
+```
+
+**JSON格式示例**：
+```python
+train_df, test_df = trainer_obj.load_data(
+    train_path="./data/train.json",
+    test_path="./data/test.json",
+    text_column='text',
+    label_column='sentiment',
+    file_format='json'
+)
+```
+
+**JSONL格式**（每行一个JSON对象）：
+```python
+train_df, test_df = trainer_obj.load_data(
+    train_path="./data/train.jsonl",
+    file_format='json'  # JSONL会自动识别
+)
+```
+
+**本地文件格式要求**：
+- CSV文件：必须包含文本列和标签列
+- JSON文件：可以是列表格式 `[{...}, {...}]` 或包含 `"data"` 键的字典
+- JSONL文件：每行一个JSON对象
+- 标签可以是字符串（如'negative'/'positive'）或数字（0/1），函数会自动映射
+
+**标签映射**：
+- 如果标签是字符串，函数会根据数据集类型自动映射：
+  - Twitter: `{'negative': 0, 'neutral': 1, 'positive': 2}`
+  - SST-2/Amazon: `{'negative': 0, 'positive': 1}`
+- 如果标签已经是数字，则直接使用
+
+**如果没有提供测试集**：
+- 如果只提供 `train_path` 而不提供 `test_path`，函数会自动从训练集中分割20%作为测试集
 
 ---
 
