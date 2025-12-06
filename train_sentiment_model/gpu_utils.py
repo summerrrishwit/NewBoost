@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-GPU工具模块
-提供GPU检测和多GPU训练设置功能
-"""
 
 import torch
 import logging
@@ -12,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 def get_available_gpus():
-    """检测所有可用的GPU设备"""
     if not torch.cuda.is_available():
         logger.warning("CUDA不可用，将使用CPU训练")
         return []
@@ -30,11 +25,9 @@ def get_available_gpus():
 
 
 def setup_multi_gpu(model, gpu_ids):
-    """设置多GPU训练"""
     if len(gpu_ids) > 1:
         logger.info(f"使用 {len(gpu_ids)} 个GPU进行训练 (DataParallel)")
         model = torch.nn.DataParallel(model, device_ids=gpu_ids)
-        # 设置主设备
         torch.cuda.set_device(gpu_ids[0])
     elif len(gpu_ids) == 1:
         logger.info(f"使用单个GPU进行训练 (GPU {gpu_ids[0]})")
@@ -44,4 +37,5 @@ def setup_multi_gpu(model, gpu_ids):
         logger.info("使用CPU进行训练")
     
     return model
+
 

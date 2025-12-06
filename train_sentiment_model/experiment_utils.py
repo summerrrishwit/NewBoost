@@ -4,7 +4,6 @@
 通用实验工具函数和基础训练器类：
 - 全局随机种子设置
 - 评估结果统一保存
-- 本地数据集加载（支持CSV、JSON、JSONL格式）
 - 基础训练器类（BaseSentimentTrainer）
 """
 
@@ -42,24 +41,9 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def load_local_dataset(train_path, test_path=None, text_column='text', label_column='label', 
                        label_mapping=None, file_format='auto'):
-    """
-    从本地文件加载数据集
-    
-    Args:
-        train_path: 训练集文件路径（CSV或JSON）
-        test_path: 测试集文件路径（CSV或JSON），如果为None则从train_path中分割
-        text_column: 文本列名（默认'text'）
-        label_column: 标签列名（默认'label'）
-        label_mapping: 标签映射字典，例如 {'positive': 1, 'negative': 0} 或 {'negative': 0, 'neutral': 1, 'positive': 2}
-        file_format: 文件格式，'auto'（自动检测）、'csv'或'json'
-        
-    Returns:
-        train_df, test_df: 训练集和测试集的DataFrame
-    """
     import json
     from pathlib import Path
     
-    # 自动检测文件格式
     if file_format == 'auto':
         train_ext = Path(train_path).suffix.lower()
         if train_ext == '.csv':
@@ -69,20 +53,17 @@ def load_local_dataset(train_path, test_path=None, text_column='text', label_col
         else:
             raise ValueError(f"无法自动检测文件格式，请指定file_format参数。支持格式: .csv, .json, .jsonl")
     
-    # 读取训练集
     logger.info(f"从本地文件加载训练集: {train_path} (格式: {file_format})")
     if file_format == 'csv':
         train_df = pd.read_csv(train_path)
     elif file_format == 'json':
         if Path(train_path).suffix.lower() == '.jsonl':
-            # JSONL格式：每行一个JSON对象
             train_data = []
             with open(train_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     train_data.append(json.loads(line.strip()))
             train_df = pd.DataFrame(train_data)
         else:
-            # 标准JSON格式
             with open(train_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             if isinstance(data, list):
@@ -94,21 +75,17 @@ def load_local_dataset(train_path, test_path=None, text_column='text', label_col
     else:
         raise ValueError(f"不支持的文件格式: {file_format}")
     
-    # 检查必需的列
     if text_column not in train_df.columns:
         raise ValueError(f"训练集中未找到文本列: {text_column}。可用列: {train_df.columns.tolist()}")
     if label_column not in train_df.columns:
         raise ValueError(f"训练集中未找到标签列: {label_column}。可用列: {train_df.columns.tolist()}")
     
-    # 处理标签映射
     if label_mapping:
-        # 将标签映射为数字
         train_df['label'] = train_df[label_column].map(label_mapping)
         if train_df['label'].isna().any():
             missing_labels = train_df[train_df['label'].isna()][label_column].unique()
             raise ValueError(f"训练集中存在未映射的标签: {missing_labels}")
     else:
-        # 如果没有提供映射，尝试将标签转换为数字
         if train_df[label_column].dtype == 'object':
             unique_labels = sorted(train_df[label_column].unique())
             label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
@@ -117,10 +94,8 @@ def load_local_dataset(train_path, test_path=None, text_column='text', label_col
         else:
             train_df['label'] = train_df[label_column]
     
-    # 重命名文本列
     train_df = train_df.rename(columns={text_column: 'text'})
     
-    # 读取测试集
     if test_path:
         logger.info(f"从本地文件加载测试集: {test_path} (格式: {file_format})")
         if file_format == 'csv':
@@ -204,10 +179,6 @@ def save_evaluation_results(
     y_pred: Iterable[int],
 ) -> None:
     """
-    统一保存评估结果到 JSON 文件，并附加混淆矩阵等信息。
-
-    Parameters
-    ----------
     result_dir : str
         结果保存目录。
     meta : EvalMeta
@@ -224,7 +195,6 @@ def save_evaluation_results(
     y_true_arr = np.array(list(y_true))
     y_pred_arr = np.array(list(y_pred))
 
-    # 混淆矩阵
     cm = confusion_matrix(y_true_arr, y_pred_arr).tolist()
 
     eval_results = {
@@ -247,17 +217,7 @@ def save_evaluation_results(
 # ==================== 基础训练器类 ====================
 
 class BaseSentimentTrainer(ABC):
-    """情感分析训练器基类"""
-    
     def __init__(self, model_name, num_labels, dataset_name):
-        """
-        初始化训练器
-        
-        Args:
-            model_name: 模型名称
-            num_labels: 标签数量
-            dataset_name: 数据集名称（用于日志和保存路径）
-        """
         self.model_name = model_name
         self.num_labels = num_labels
         self.dataset_name = dataset_name
@@ -268,16 +228,9 @@ class BaseSentimentTrainer(ABC):
     
     @abstractmethod
     def load_data(self, **kwargs):
-        """
-        加载数据集（子类必须实现）
-        
-        Returns:
-            train_df, test_df: 训练集和测试集的DataFrame
-        """
         pass
     
-    def setup_model(self):
-        """设置模型和分词器"""
+    def setup_model(self, move_to_gpu=True):
         model_path = get_model_path(self.model_name)
         logger.info(f"正在加载模型: {self.model_name} -> {model_path}")
         
@@ -290,22 +243,16 @@ class BaseSentimentTrainer(ABC):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        # 检测并设置GPU
         self.gpu_ids = get_available_gpus()
-        self.model = setup_multi_gpu(self.model, self.gpu_ids)
+        
+        if move_to_gpu:
+            self.model = setup_multi_gpu(self.model, self.gpu_ids)
+    
+    def move_model_to_gpu(self):
+        if self.model is not None:
+            self.model = setup_multi_gpu(self.model, self.gpu_ids)
     
     def tokenize_data(self, train_df, test_df, max_length=256):
-        """
-        数据预处理和分词
-        
-        Args:
-            train_df: 训练集DataFrame
-            test_df: 测试集DataFrame
-            max_length: 最大序列长度
-            
-        Returns:
-            dataset: 处理后的DatasetDict
-        """
         logger.info("正在进行数据预处理...")
         
         def tokenize(batch):
@@ -320,18 +267,41 @@ class BaseSentimentTrainer(ABC):
         test_dataset = Dataset.from_pandas(test_df[["text", "label"]])
         dataset = DatasetDict({"train": train_dataset, "test": test_dataset})
         
-        dataset = dataset.map(
-            tokenize,
-            batched=True,
-            batch_size=32,
-            num_proc=4,
-            remove_columns=["text"]
-        )
+        # 检查模型是否在GPU上，如果在GPU上则禁用多进程以避免CUDA错误
+        # 如果模型在CPU上，可以使用多进程加速
+        use_multiprocessing = True
+        if self.model is not None:
+            # 检查模型是否在GPU上
+            try:
+                next_param = next(self.model.parameters())
+                if next_param.is_cuda:
+                    use_multiprocessing = False
+                    logger.info("检测到模型在GPU上，禁用多进程以避免CUDA multiprocessing错误")
+            except:
+                pass
+        
+        if use_multiprocessing:
+            # 使用多进程加速tokenize（模型在CPU上时）
+            dataset = dataset.map(
+                tokenize,
+                batched=True,
+                batch_size=32,
+                num_proc=4,
+                remove_columns=["text"]
+            )
+        else:
+            # 禁用多进程（模型在GPU上时）
+            dataset = dataset.map(
+                tokenize,
+                batched=True,
+                batch_size=32,
+                num_proc=1,
+                remove_columns=["text"]
+            )
         
         return dataset
     
     def compute_metrics(self, eval_pred):
-        """计算评估指标"""
         logits, labels = eval_pred
         preds = np.argmax(logits, axis=1)
         
@@ -346,20 +316,8 @@ class BaseSentimentTrainer(ABC):
         }
     
     def get_training_args(self, output_dir, **kwargs):
-        """
-        获取训练参数配置
-        
-        Args:
-            output_dir: 输出目录
-            **kwargs: 可选的训练参数覆盖
-            
-        Returns:
-            TrainingArguments对象
-        """
-        # 根据GPU数量调整batch size
         num_gpus = len(self.gpu_ids) if self.gpu_ids else 0
         
-        # 默认参数
         default_args = {
             "per_device_train_batch_size": 16 if num_gpus > 0 else 8,
             "per_device_eval_batch_size": 32 if num_gpus > 0 else 16,
@@ -372,7 +330,6 @@ class BaseSentimentTrainer(ABC):
             "logging_steps": 100,
         }
         
-        # 允许子类通过kwargs覆盖默认参数
         default_args.update(kwargs)
         
         if num_gpus > 0:
@@ -404,24 +361,12 @@ class BaseSentimentTrainer(ABC):
             greater_is_better=True,
             save_total_limit=3,  # 保存最近3个checkpoint（包含最佳模型）
             warmup_steps=default_args["warmup_steps"],
-            # 多GPU相关设置
             ddp_find_unused_parameters=False if num_gpus > 1 else None,
         )
         
         return training_args
     
     def train(self, dataset, output_dir, **training_kwargs):
-        """
-        训练模型
-        
-        Args:
-            dataset: 处理后的数据集
-            output_dir: 输出目录
-            **training_kwargs: 传递给get_training_args的额外参数
-            
-        Returns:
-            trainer: Trainer对象
-        """
         logger.info("开始训练模型...")
         
         training_args = self.get_training_args(output_dir, **training_kwargs)
@@ -463,27 +408,9 @@ class BaseSentimentTrainer(ABC):
     
     @abstractmethod
     def get_target_names(self):
-        """
-        获取分类标签名称（子类必须实现）
-        
-        Returns:
-            list: 标签名称列表
-        """
         pass
     
     def evaluate(self, trainer, dataset, model_name, seed=42):
-        """
-        评估模型
-        
-        Args:
-            trainer: Trainer对象
-            dataset: 数据集
-            model_name: 模型名称
-            seed: 随机种子
-            
-        Returns:
-            predictions: 预测结果
-        """
         logger.info("正在评估模型...")
         
         predictions = trainer.predict(dataset["test"])
@@ -531,12 +458,6 @@ class BaseSentimentTrainer(ABC):
         return predictions
     
     def save_model(self, output_dir):
-        """
-        保存模型
-        
-        Args:
-            output_dir: 输出目录
-        """
         logger.info(f"正在保存模型到 {output_dir}")
         # 如果模型使用了DataParallel，需要获取原始模型
         model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
