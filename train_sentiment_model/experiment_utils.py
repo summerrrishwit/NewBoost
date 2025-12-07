@@ -36,6 +36,19 @@ from gpu_utils import get_available_gpus, setup_multi_gpu
 logger = logging.getLogger(__name__)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+try:
+    from peft import (
+        LoraConfig,
+        PrefixTuningConfig,
+        TaskType,
+        get_peft_model,
+        PeftModel
+    )
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+    logger.warning("PEFT库未安装，LoRA和Prefix Tuning功能不可用")
+
 
 # ==================== 实验工具函数 ====================
 
@@ -214,25 +227,131 @@ def save_evaluation_results(
         json.dump(eval_results, f, indent=2, ensure_ascii=False)
 
 
+def setup_lora_model(model, r=8, lora_alpha=16, lora_dropout=0.1, target_modules=None):
+    if not PEFT_AVAILABLE:
+        raise ImportError("PEFT库未安装，无法使用LoRA功能。请运行: pip install peft")
+    
+    if target_modules is None:
+        model_type = model.config.model_type if hasattr(model.config, 'model_type') else None
+        if model_type in ['bert', 'roberta', 'deberta']:
+            target_modules = ["query", "value"]
+        else:
+            target_modules = ["query", "value"]
+            logger.warning(f"未知模型类型 {model_type}，使用默认目标模块: {target_modules}")
+    
+    lora_config = LoraConfig(
+        task_type=TaskType.SEQ_CLS,
+        r=r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=target_modules,
+        bias="none",
+    )
+    
+    model = get_peft_model(model, lora_config)
+    logger.info(f"LoRA配置: r={r}, alpha={lora_alpha}, dropout={lora_dropout}, target_modules={target_modules}")
+    logger.info(f"可训练参数数量: {model.num_parameters(only_trainable=True):,}")
+    logger.info(f"总参数数量: {model.num_parameters():,}")
+    
+    return model
+
+
+def setup_prefix_tuning_model(model, num_virtual_tokens=20, prefix_projection=False):
+    if not PEFT_AVAILABLE:
+        raise ImportError("PEFT库未安装，无法使用Prefix Tuning功能。请运行: pip install peft")
+    
+    # 获取模型配置
+    if hasattr(model.config, 'hidden_size'):
+        hidden_size = model.config.hidden_size
+    elif hasattr(model.config, 'd_model'):
+        hidden_size = model.config.d_model
+    else:
+        hidden_size = 768  # 默认值
+        logger.warning(f"无法检测模型hidden_size，使用默认值: {hidden_size}")
+    
+    prefix_config = PrefixTuningConfig(
+        task_type=TaskType.SEQ_CLS,
+        num_virtual_tokens=num_virtual_tokens,
+        encoder_hidden_size=hidden_size if prefix_projection else None,
+    )
+    
+    # 由于 PEFT 0.13.2 的 bug，get_peft_model 和 PeftModel.__init__ 会传递不支持的 low_cpu_mem_usage 参数
+    # 我们使用 workaround：monkey patch add_adapter 方法来忽略这个参数
+    try:
+        # 尝试使用 get_peft_model（如果库已修复）
+        model = get_peft_model(model, prefix_config)
+    except TypeError as e:
+        if "low_cpu_mem_usage" in str(e):
+            # 使用 workaround：monkey patch add_adapter 来忽略 low_cpu_mem_usage 参数
+            logger.warning("检测到 PEFT 库的 low_cpu_mem_usage bug，使用 workaround...")
+            import peft.peft_model
+            original_add_adapter = peft.peft_model.PeftModel.add_adapter
+            
+            def patched_add_adapter(self, adapter_name, peft_config, **kwargs):
+                # 移除 low_cpu_mem_usage 参数（如果存在）
+                kwargs.pop('low_cpu_mem_usage', None)
+                # 调用原始方法，不传递 low_cpu_mem_usage
+                return original_add_adapter(self, adapter_name, peft_config)
+            
+            # 临时替换方法
+            peft.peft_model.PeftModel.add_adapter = patched_add_adapter
+            try:
+                model = PeftModel(model, prefix_config, adapter_name="default")
+            finally:
+                # 恢复原方法
+                peft.peft_model.PeftModel.add_adapter = original_add_adapter
+        else:
+            raise
+    
+    logger.info(f"Prefix Tuning配置: num_virtual_tokens={num_virtual_tokens}, prefix_projection={prefix_projection}")
+    logger.info(f"可训练参数数量: {model.num_parameters(only_trainable=True):,}")
+    logger.info(f"总参数数量: {model.num_parameters():,}")
+    
+    return model
+
+
 # ==================== 基础训练器类 ====================
 
 class BaseSentimentTrainer(ABC):
-    def __init__(self, model_name, num_labels, dataset_name):
+    """情感分析训练器基类"""
+    
+    def __init__(self, model_name, num_labels, dataset_name, finetune_method="full"):
+        """
+        初始化训练器
+        
+        Args:
+            model_name: 模型名称
+            num_labels: 标签数量
+            dataset_name: 数据集名称（用于日志和保存路径）
+            finetune_method: 微调方法，可选 "full"（全参数微调）、"lora"（LoRA微调）、"prefix"（Prefix Tuning）
+        """
         self.model_name = model_name
         self.num_labels = num_labels
         self.dataset_name = dataset_name
+        self.finetune_method = finetune_method
         self.tokenizer = None
         self.model = None
         self.label_encoder = None
         self.gpu_ids = []
+        self._model_on_gpu = False
     
     @abstractmethod
     def load_data(self, **kwargs):
         pass
     
-    def setup_model(self, move_to_gpu=True):
+    def setup_model(self, move_to_gpu=True, **kwargs):
+        """
+        设置模型和分词器
+        
+        Args:
+            move_to_gpu: 是否立即将模型移动到GPU（默认True）
+            **kwargs: 额外的模型设置参数
+                - 对于LoRA: r, lora_alpha, lora_dropout, target_modules
+                - 对于Prefix Tuning: num_virtual_tokens, prefix_projection
+        """
         model_path = get_model_path(self.model_name)
         logger.info(f"正在加载模型: {self.model_name} -> {model_path}")
+        logger.info(f"微调方法: {self.finetune_method}")
         
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.model = AutoModelForSequenceClassification.from_pretrained(
@@ -243,14 +362,51 @@ class BaseSentimentTrainer(ABC):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
+        if self.finetune_method == "lora":
+            r = kwargs.get("r", 8)
+            lora_alpha = kwargs.get("lora_alpha", 16)
+            lora_dropout = kwargs.get("lora_dropout", 0.1)
+            target_modules = kwargs.get("target_modules", None)
+            self.model = setup_lora_model(
+                self.model,
+                r=r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                target_modules=target_modules
+            )
+        elif self.finetune_method == "prefix":
+            num_virtual_tokens = kwargs.get("num_virtual_tokens", 20)
+            prefix_projection = kwargs.get("prefix_projection", False)
+            self.model = setup_prefix_tuning_model(
+                self.model,
+                num_virtual_tokens=num_virtual_tokens,
+                prefix_projection=prefix_projection
+            )
+        elif self.finetune_method != "full":
+            raise ValueError(f"未知的微调方法: {self.finetune_method}。支持的方法: 'full', 'lora', 'prefix'")
+        
         self.gpu_ids = get_available_gpus()
         
         if move_to_gpu:
-            self.model = setup_multi_gpu(self.model, self.gpu_ids)
+            self.move_model_to_gpu()
+        else:
+            logger.info("模型将保持在CPU上，稍后可通过 move_model_to_gpu() 移动到GPU")
     
     def move_model_to_gpu(self):
-        if self.model is not None:
+        """将模型移动到GPU"""
+        if self.model is None:
+            raise ValueError("模型尚未初始化，请先调用 setup_model()")
+        
+        if self._model_on_gpu:
+            logger.info("模型已在GPU上")
+            return
+        
+        if len(self.gpu_ids) > 0:
+            logger.info(f"将模型移动到GPU: {self.gpu_ids}")
             self.model = setup_multi_gpu(self.model, self.gpu_ids)
+            self._model_on_gpu = True
+        else:
+            logger.warning("未检测到GPU，模型将保持在CPU上")
     
     def tokenize_data(self, train_df, test_df, max_length=256):
         logger.info("正在进行数据预处理...")
@@ -267,37 +423,13 @@ class BaseSentimentTrainer(ABC):
         test_dataset = Dataset.from_pandas(test_df[["text", "label"]])
         dataset = DatasetDict({"train": train_dataset, "test": test_dataset})
         
-        # 检查模型是否在GPU上，如果在GPU上则禁用多进程以避免CUDA错误
-        # 如果模型在CPU上，可以使用多进程加速
-        use_multiprocessing = True
-        if self.model is not None:
-            # 检查模型是否在GPU上
-            try:
-                next_param = next(self.model.parameters())
-                if next_param.is_cuda:
-                    use_multiprocessing = False
-                    logger.info("检测到模型在GPU上，禁用多进程以避免CUDA multiprocessing错误")
-            except:
-                pass
-        
-        if use_multiprocessing:
-            # 使用多进程加速tokenize（模型在CPU上时）
-            dataset = dataset.map(
-                tokenize,
-                batched=True,
-                batch_size=32,
-                num_proc=4,
-                remove_columns=["text"]
-            )
-        else:
-            # 禁用多进程（模型在GPU上时）
-            dataset = dataset.map(
-                tokenize,
-                batched=True,
-                batch_size=32,
-                num_proc=1,
-                remove_columns=["text"]
-            )
+        dataset = dataset.map(
+            tokenize,
+            batched=True,
+            batch_size=32,
+            num_proc=4,
+            remove_columns=["text"]
+        )
         
         return dataset
     
@@ -390,7 +522,14 @@ class BaseSentimentTrainer(ABC):
         
         # 如果模型使用了DataParallel，需要获取原始模型
         model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
-        model_to_save.save_pretrained(best_model_dir)
+        
+        # 检查是否是PEFT模型
+        if PEFT_AVAILABLE and hasattr(model_to_save, 'save_pretrained'):
+            # PEFT模型会自动处理保存
+            model_to_save.save_pretrained(best_model_dir)
+        else:
+            model_to_save.save_pretrained(best_model_dir)
+        
         self.tokenizer.save_pretrained(best_model_dir)
         
         # 同时保存训练状态和最佳checkpoint信息
@@ -461,6 +600,13 @@ class BaseSentimentTrainer(ABC):
         logger.info(f"正在保存模型到 {output_dir}")
         # 如果模型使用了DataParallel，需要获取原始模型
         model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
-        model_to_save.save_pretrained(output_dir)
+        
+        # 检查是否是PEFT模型
+        if PEFT_AVAILABLE and hasattr(model_to_save, 'save_pretrained'):
+            # PEFT模型会自动处理保存
+            model_to_save.save_pretrained(output_dir)
+        else:
+            model_to_save.save_pretrained(output_dir)
+        
         self.tokenizer.save_pretrained(output_dir)
         logger.info("模型保存完成!")

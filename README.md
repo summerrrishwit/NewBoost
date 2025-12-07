@@ -135,9 +135,9 @@ NewsBoost/
   - 最佳模型目录包含模型权重、tokenizer和训练参数配置
 
 - **支持的数据集**：
-  - **Twitter Sentiment**：三分类情感分析（negative/neutral/positive）
   - **SST-2**：二分类情感分析（negative/positive）
   - **Amazon Reviews**：二分类情感分析（negative/positive）
+  - **twitter sentiment**：二分类情感分析（negative/neutral/positive）
 
 - **支持的模型**：
   - BERT (`bert-base-uncased`)
@@ -149,13 +149,17 @@ NewsBoost/
 ```bash
 # 运行单个数据集实验
 cd train_sentiment_model
-python twitter_sentiment_experiment.py
 python sst2_experiment.py
 python amazon_experiment.py
 
 # 或运行所有实验
 python run_all_experiments.py
 ```
+
+**数据加载**：
+- 优先从本地 `dataset/` 目录加载 parquet 格式的数据集（速度更快）
+- 如果本地文件不存在或有问题，自动回退到 Hugging Face 下载
+- 支持 Git LFS 管理的大型数据集文件
 
 ### GPU使用说明
 
@@ -211,3 +215,4 @@ python run_all_experiments.py
 - 模型加载失败会触发 `st.warning`，同时降级至 VADER 或跳过摘要模块。
 - 当过滤结果为空、摘要输入过短或词云词表不足时，界面会给出可操作的提示语句，引导调参。
 - 所有网络请求使用共享 `requests.Session` 与 UA 设置，可在 `collector.py` 中扩展重试和节流策略。
+
