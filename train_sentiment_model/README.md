@@ -67,36 +67,12 @@
 
 ---
 
-### 环境依赖
-
-建议使用 Python 3.9+，主要依赖见 `requirements.txt`，核心包括：
-
-- `transformers` (>=4.20.0, <5.0.0)
-- `datasets`
-- `torch`
-- `scikit-learn`
-- `pandas`
-- `numpy`
-- `peft` (>=0.13.0，用于 LoRA / Prefix Tuning 等参数高效微调)
-- `accelerate` (>=0.26.0，PEFT 依赖)
-- `packaging` (用于版本检查)
-
 安装依赖示例：
 
 ```bash
 pip install -r requirements.txt
 ```
-
-**重要提示**：
-- 如果使用 Prefix Tuning 时遇到 `low_cpu_mem_usage` 相关错误，请确保：
-  1. PEFT 版本 >= 0.13.0: `pip install --upgrade peft>=0.13.0`
-  2. 已安装 accelerate: `pip install accelerate`
-  3. 如果问题仍然存在，可以暂时使用其他微调方法（full 或 lora）
-
-
 ---
-
-### 数据集说明
 
 #### 数据源支持
 
@@ -443,49 +419,6 @@ if __name__ == "__main__":
 同时，`TrainingArguments` 中也可以设置相同的 `seed`，进一步增强复现性。
 
 ---
-
-### 故障排除
-
-#### Prefix Tuning 相关错误
-
-**错误信息**：`add_adapter() got an unexpected keyword argument 'low_cpu_mem_usage'`
-
-**原因**：PEFT 库版本过旧或与 transformers 版本不兼容。
-
-**解决方案**：
-
-1. **升级 PEFT 库**（推荐）：
-   ```bash
-   pip install --upgrade peft>=0.13.0
-   ```
-
-2. **确保已安装 accelerate**：
-   ```bash
-   pip install accelerate>=0.26.0
-   ```
-
-3. **检查版本兼容性**：
-   ```bash
-   pip list | grep -E "(peft|transformers|accelerate)"
-   ```
-   确保版本满足：
-   - `peft >= 0.13.0`
-   - `transformers >= 4.20.0, < 5.0.0`
-   - `accelerate >= 0.26.0`
-
-4. **临时解决方案**：
-   如果升级后仍有问题，可以暂时使用其他微调方法：
-   ```bash
-   # 只运行 full 和 lora，跳过 prefix
-   python amazon_experiment.py --methods full lora
-   ```
-
-5. **完全重新安装**（如果上述方法都不行）：
-   ```bash
-   pip uninstall peft transformers accelerate
-   pip install peft>=0.13.0 transformers>=4.20.0,<5.0.0 accelerate>=0.26.0
-   ```
-
 #### 其他常见问题
 
 - **CUDA multiprocessing 错误**：代码已优化，模型会在 tokenize 完成后再移到 GPU，避免此问题。
