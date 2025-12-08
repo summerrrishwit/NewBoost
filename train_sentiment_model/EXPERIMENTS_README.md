@@ -64,7 +64,7 @@ python run_all_experiments.py
 
 ### 模型配置
 - **BERT**: `bert-base-uncased`
-- **DeBERTa**: `microsoft/deberta-base`
+- **DeBERTa**: `deberta-base`
 
 ### 训练参数
 - 学习率: 2e-5

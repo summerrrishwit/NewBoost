@@ -263,7 +263,7 @@ if __name__ == "__main__":
     # 解析模型选择
     model_map = {
         "bert": ("bert-base-uncased", "BERT"),
-        "deberta": ("microsoft/deberta-base", "DeBERTa"),
+        "deberta": ("deberta-base", "DeBERTa"),
         "roberta": ("roberta-base", "RoBERTa")
     }
     
