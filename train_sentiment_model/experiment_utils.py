@@ -484,7 +484,7 @@ class BaseSentimentTrainer(ABC):
             weight_decay=default_args["weight_decay"],
             logging_dir=f"{output_dir}/logs",
             logging_steps=default_args["logging_steps"],
-            report_to="none",
+            report_to="tensorboard",
             disable_tqdm=False,
             fp16=fp16,
             dataloader_num_workers=dataloader_num_workers,

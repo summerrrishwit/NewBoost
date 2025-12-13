@@ -6,8 +6,12 @@ SST-2 (Stanford Sentiment Treebank) 情感分析实验
 """
 
 import os
+import sys
 import logging
 import glob
+import subprocess
+import threading
+import time
 import pandas as pd
 from datasets import load_dataset
 from experiment_utils import BaseSentimentTrainer
@@ -116,7 +120,40 @@ class SentimentTrainer(BaseSentimentTrainer):
         return ['negative', 'positive']
 
 
-def run_sst2_experiment(model_name, model_display_name, finetune_method="full"):
+def start_tensorboard(log_dir, port=6006):
+    """在后台启动 TensorBoard 服务器"""
+    try:
+        # 检查 tensorboard 是否已安装
+        import tensorboard
+        logger.info(f"启动 TensorBoard，日志目录: {log_dir}, 端口: {port}")
+        logger.info(f"TensorBoard 访问地址: http://localhost:{port}")
+        
+        # 启动 tensorboard 进程
+        cmd = [sys.executable, "-m", "tensorboard.main", "--logdir", log_dir, "--port", str(port)]
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # 等待一下确保启动成功
+        time.sleep(2)
+        if process.poll() is None:
+            logger.info(f"✓ TensorBoard 已启动在端口 {port}")
+            return process
+        else:
+            logger.warning("TensorBoard 启动失败，可能端口已被占用")
+            return None
+    except ImportError:
+        logger.warning("TensorBoard 未安装，跳过可视化")
+        return None
+    except Exception as e:
+        logger.warning(f"启动 TensorBoard 时出错: {e}")
+        return None
+
+
+def run_sst2_experiment(model_name, model_display_name, finetune_method="full", start_tb=True, tb_port=6006):
     print(f"\n{'='*60}")
     print(f"开始 {model_display_name} 在 SST-2 数据集上的实验")
     print(f"微调方法: {finetune_method}")
@@ -134,6 +171,14 @@ def run_sst2_experiment(model_name, model_display_name, finetune_method="full"):
     # 在结果目录中包含微调方法
     method_suffix = f"_{finetune_method}" if finetune_method != "full" else ""
     results_dir = f"./results/sst2_{model_name.replace('/', '_')}{method_suffix}_results"
+    
+    # 启动 TensorBoard（如果启用）
+    tb_process = None
+    if start_tb:
+        # TensorBoard 日志目录是 results_dir 下的 logs 子目录
+        tb_log_dir = os.path.join(results_dir, "logs")
+        tb_process = start_tensorboard(tb_log_dir, tb_port)
+    
     trainer = trainer_obj.train(dataset, results_dir)
     
     predictions = trainer_obj.evaluate(trainer, dataset, model_name)
@@ -143,6 +188,9 @@ def run_sst2_experiment(model_name, model_display_name, finetune_method="full"):
     
     print(f"\n{model_display_name} 在 SST-2 数据集上的实验完成!")
     print(f"最佳模型已保存到: {results_dir.replace('_results', '_best_model')}")
+    if tb_process:
+        print(f"TensorBoard 仍在运行，访问 http://localhost:{tb_port} 查看训练可视化")
+    
     return trainer_obj
 
 
@@ -166,8 +214,28 @@ if __name__ == "__main__":
         default=["all"],
         help="选择模型: 'bert'、'deberta'、'roberta'、'all'（所有模型，默认）"
     )
+    parser.add_argument(
+        "--tensorboard",
+        action="store_true",
+        default=True,
+        help="启动 TensorBoard 可视化（默认启用）"
+    )
+    parser.add_argument(
+        "--tb-port",
+        type=int,
+        default=6006,
+        help="TensorBoard 端口（默认 6006）"
+    )
+    parser.add_argument(
+        "--no-tensorboard",
+        action="store_true",
+        help="禁用 TensorBoard 可视化"
+    )
     
     args = parser.parse_args()
+    
+    # 处理 tensorboard 参数
+    start_tb = args.tensorboard and not args.no_tensorboard
     
     available_models = get_available_models()
     print(f"可用的本地模型: {available_models}")
@@ -194,11 +262,31 @@ if __name__ == "__main__":
     print(f"选择的微调方法: {finetune_methods}")
     print(f"{'='*60}\n")
     
+    # 如果启用 TensorBoard，为所有实验启动一个全局 TensorBoard（监控所有结果目录）
+    tb_process = None
+    if start_tb:
+        results_base_dir = "./results"
+        if os.path.exists(results_base_dir):
+            logger.info(f"启动全局 TensorBoard，监控目录: {results_base_dir}")
+            tb_process = start_tensorboard(results_base_dir, args.tb_port)
+            if tb_process:
+                print(f"\n{'='*60}")
+                print(f"TensorBoard 已启动!")
+                print(f"访问地址: http://localhost:{args.tb_port}")
+                print(f"监控目录: {results_base_dir}")
+                print(f"{'='*60}\n")
+    
     results = {}
     for model_name, display_name in models:
         for finetune_method in finetune_methods:
             try:
-                result = run_sst2_experiment(model_name, display_name, finetune_method=finetune_method)
+                # 对于每个实验，不单独启动 TensorBoard（使用全局的）
+                result = run_sst2_experiment(
+                    model_name, 
+                    display_name, 
+                    finetune_method=finetune_method,
+                    start_tb=False  # 使用全局 TensorBoard
+                )
                 results[f"{display_name}_{finetune_method}"] = result
             except Exception as e:
                 print(f"实验 {display_name} ({finetune_method}) 失败: {str(e)}")
@@ -206,4 +294,6 @@ if __name__ == "__main__":
     
     print(f"\n{'='*60}")
     print("所有 SST-2 实验完成!")
+    if tb_process:
+        print(f"TensorBoard 仍在运行，访问 http://localhost:{args.tb_port} 查看所有实验的可视化")
     print(f"{'='*60}")

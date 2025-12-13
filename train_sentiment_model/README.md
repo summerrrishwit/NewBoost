@@ -45,6 +45,7 @@
   - 实现 `load_data()` 和 `get_target_names()`
   - 支持从本地 parquet 文件或 Hugging Face 加载数据
   - 支持 full/lora/prefix 三种微调方式
+  - 支持 TensorBoard 可视化训练过程
 
 - **`twitter_experiment.py`**: TweetEval Sentiment 三分类实验（negative/neutral/positive）
   - 继承 `experiment_utils.BaseSentimentTrainer`
@@ -52,6 +53,7 @@
   - 支持从本地 parquet 文件或 Hugging Face 加载数据
   - 支持 full/lora/prefix 三种微调方式
   - 覆盖 `tokenize_data()` 以使用较短的max_length（128，适合Twitter推文）
+  - 支持 TensorBoard 可视化训练过程
 
 #### 工具模块
 
@@ -219,6 +221,28 @@ python amazon_experiment.py --models bert roberta
 python amazon_experiment.py --models bert --methods lora
 ```
 
+**TensorBoard 可视化**：
+```bash
+# 使用默认设置（自动启动 TensorBoard，端口 6006）
+python twitter_experiment.py
+
+# 指定 TensorBoard 端口
+python twitter_experiment.py --tb-port 6007
+
+# 禁用 TensorBoard
+python twitter_experiment.py --no-tensorboard
+```
+
+TensorBoard 会自动记录训练过程中的各种指标：
+- 训练损失 (train/loss)
+- 验证损失 (eval/loss)
+- 准确率 (eval/accuracy)
+- F1 分数 (eval/f1_macro, eval/f1_weighted)
+- 学习率 (train/learning_rate)
+- 训练步数 (train/epoch)
+
+运行实验后，访问 `http://localhost:6006`（或指定的端口）查看实时训练可视化。
+
 **查看帮助信息**：
 ```bash
 python amazon_experiment.py --help
@@ -236,6 +260,9 @@ python twitter_experiment.py --help
 **命令行参数说明**：
 - `--methods`: 选择微调方法，可选值：`full`、`lora`、`prefix`、`all`（默认）
 - `--models`: 选择模型，可选值：`bert`、`deberta`、`roberta`、`all`（默认）
+- `--tensorboard`: 启动 TensorBoard 可视化（默认启用）
+- `--tb-port`: 指定 TensorBoard 端口（默认 6006）
+- `--no-tensorboard`: 禁用 TensorBoard 可视化
 - 可以同时指定多个方法和模型，例如：`--methods full lora --models bert roberta`
 
 ---
