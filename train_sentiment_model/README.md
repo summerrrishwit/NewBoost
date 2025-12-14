@@ -10,21 +10,14 @@
 
 #### 核心模块
 
-- **`experiment_utils.py`**: 实验工具和基础训练器类，包含：
-  - **工具函数**：
-    - `set_global_seed()`: 统一设置随机种子
-    - `save_evaluation_results()`: 统一保存评估结果
-    - `EvalMeta`: 评估元信息数据类
-    - `setup_lora_model()`: LoRA 微调模型设置
-    - `setup_prefix_tuning_model()`: Prefix Tuning 微调模型设置
-  - **基础训练器类**（`BaseSentimentTrainer`），包含所有公共的训练逻辑：
-    - GPU检测和设置
-    - 模型加载和初始化（支持 full/lora/prefix 三种微调方式）
-    - 数据预处理和分词
-    - 训练参数配置
-    - 训练流程管理
-    - 最佳模型自动保存
-    - 评估指标计算
+- **`experiment_utils/`**: 公共实验工具包（模块化拆分）：
+  - `trainer.py`: `BaseSentimentTrainer` 基类，封装训练/评估通用逻辑
+  - `data.py`: `set_global_seed` 与本地数据加载 `load_local_dataset`
+  - `results.py`: 评估结果结构与 `save_evaluation_results`
+  - `peft_utils.py`: LoRA / Prefix Tuning 配置工具
+  - `runtime.py`: TensorBoard 启动、parquet 检查等运行时工具
+  - `cli.py`: 实验脚本通用命令行参数解析器与解析函数
+  - `__init__.py`: 统一出口，保持 `from experiment_utils import ...` 的用法
 
 - **`gpu_utils.py`**: GPU工具模块：
   - **`get_available_gpus()`**: 检测所有可用的GPU设备
@@ -58,10 +51,7 @@
 #### 工具模块
 
 - **`run_all_experiments.py`**: （可选）统一入口脚本，用于批量运行多模型、多数据集实验。
-- **`experiment_utils.py`**: 公共工具函数和基础训练器类：
-  - **`set_global_seed`**: 统一设置随机种子，保证实验可复现。
-  - **`save_evaluation_results`**: 统一保存评估结果（accuracy、macro/weighted F1、完整 `classification_report`、混淆矩阵、预测/真实标签等）。
-  - **`BaseSentimentTrainer`**: 基础训练器类，包含所有公共的训练逻辑。
+- **`experiment_utils/`**: 模块化的实验工具包（数据加载、结果保存、PEFT 配置、通用 CLI、基础训练器、TensorBoard 与 parquet 检查等）。
 - **`model_config.py`**: 管理本地模型路径及可用模型列表（`get_model_path` / `get_available_models`）。
 - **`results/`**: 各实验运行完后的结果目录，包含 JSON 评估文件和保存的模型。
 - **`EXPERIMENTS_README.md`**: 详细实验说明文档（中文），包括设计思路、实验设置和部分结果总结。
@@ -181,7 +171,7 @@ trainer.setup_model(
 
 **实现细节**：
 
-- 微调功能在 `experiment_utils.py` 中实现，包含 `setup_lora_model()` 和 `setup_prefix_tuning_model()` 函数
+- 微调功能在 `experiment_utils/peft_utils.py` 中实现，包含 `setup_lora_model()` 和 `setup_prefix_tuning_model()` 函数
 - `BaseSentimentTrainer.setup_model()` 方法会根据 `finetune_method` 自动应用相应的配置
 - 模型保存时会自动识别 PEFT 模型并使用相应的保存方法
 - 所有三个实验（SST-2、Amazon Reviews、Twitter Sentiment）都支持微调功能

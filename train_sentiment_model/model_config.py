@@ -12,7 +12,12 @@ class ModelConfig:
             "deberta-base": self.base_models_dir / "deberta-base" ,
             "roberta-base": self.base_models_dir / "roberta-base"
         }
-        
+        self.hf_model_names = {
+            "bert-base-uncased": "bert-base-uncased",
+            "deberta-base": "microsoft/deberta-base",
+            "roberta-base": "roberta-base"
+        }
+
         self._validate_model_paths()
     
     def _validate_model_paths(self):
@@ -29,8 +34,9 @@ class ModelConfig:
             if model_path.exists():
                 return str(model_path)
             else:
-                print(f"警告: 模型路径不存在，将使用在线模型: {model_name}")
-                return model_name
+                hf_model_name = self.hf_model_names.get(model_name, model_name)
+                print(f"警告: 模型路径不存在，将使用在线模型: {hf_model_name}")
+                return hf_model_name
         else:
             print(f"警告: 未知模型名称，将使用在线模型: {model_name}")
             return model_name

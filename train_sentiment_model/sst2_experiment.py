@@ -6,15 +6,18 @@ SST-2 (Stanford Sentiment Treebank) 情感分析实验
 """
 
 import os
-import sys
 import logging
-import glob
-import subprocess
-import threading
-import time
 import pandas as pd
 from datasets import load_dataset
-from experiment_utils import BaseSentimentTrainer
+from experiment_utils import (
+    BaseSentimentTrainer,
+    build_common_arg_parser,
+    check_and_get_parquet_files,
+    parse_selected_methods,
+    parse_selected_models,
+    start_tensorboard,
+    tensorboard_should_start,
+)
 from model_config import get_available_models
 
 logging.basicConfig(level=logging.INFO)
@@ -26,47 +29,31 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(BASE_DIR, "dataset")
 
 
-def _is_git_lfs_pointer(file_path):
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            first_line = f.readline().strip()
-            return first_line == "version https://git-lfs.github.com/spec/v1"
-    except:
-        return False
-
-
-def _check_and_get_parquet_files(data_dir, split_name):
-    pattern = os.path.join(data_dir, f"{split_name}-*.parquet")
-    files = glob.glob(pattern)
-    
-    if not files:
-        raise FileNotFoundError(f"未找到 {split_name} 的 parquet 文件: {pattern}")
-    
-    # 检查是否是 Git LFS 指针文件
-    for file_path in files:
-        if _is_git_lfs_pointer(file_path):
-            raise ValueError(
-                f"文件 {file_path} 是 Git LFS 指针文件，不是实际的 parquet 文件。\n"
-                f"请先运行 'git lfs pull' 或手动下载实际的 parquet 文件。"
-            )
-    
-    return files
-
-
 class SentimentTrainer(BaseSentimentTrainer):
     def __init__(self, model_name, num_labels=2, finetune_method="full"):
         super().__init__(model_name, num_labels, "SST-2", finetune_method=finetune_method)
         
-    def load_data(self, use_local_parquet=True):
+    def load_data(self, use_local_parquet=True, return_dataset=False):
+        """
+        加载SST-2数据集
+        
+        Args:
+            use_local_parquet: 是否优先使用本地parquet文件
+            return_dataset: 如果为True，返回Dataset对象而不是DataFrame（用于优化，避免多次map）
+        
+        Returns:
+            如果 return_dataset=False: (train_df, test_df)
+            如果 return_dataset=True: DatasetDict with 'train' and 'validation' splits
+        """
         sst2_dir = os.path.join(DATASET_DIR, "glue", "sst2")
         use_local = False
         
         if use_local_parquet and os.path.exists(sst2_dir):
             try:
                 logger.info("尝试从本地 parquet 文件加载SST-2数据集...")
-                train_files = _check_and_get_parquet_files(sst2_dir, "train")
-                validation_files = _check_and_get_parquet_files(sst2_dir, "validation")
-                test_files = _check_and_get_parquet_files(sst2_dir, "test")
+                train_files = check_and_get_parquet_files(sst2_dir, "train")
+                validation_files = check_and_get_parquet_files(sst2_dir, "validation")
+                test_files = check_and_get_parquet_files(sst2_dir, "test")
 
                 data_files = {
                     "train": train_files,
@@ -92,6 +79,17 @@ class SentimentTrainer(BaseSentimentTrainer):
             logger.info("从Hugging Face加载SST-2数据集...")
             dataset = load_dataset("glue", "sst2")
         
+        # 重命名 'sentence' 列为 'text' 以便统一处理
+        if 'sentence' in dataset['train'].column_names:
+            dataset = dataset.rename_column('sentence', 'text')
+        
+        # 如果返回Dataset，不进行map操作（将在tokenize_data中一次性完成）
+        if return_dataset:
+            logger.info(f"训练集大小: {len(dataset['train'])}")
+            logger.info(f"测试集大小: {len(dataset['validation'])}")
+            return dataset
+        
+        # 否则，进行标签转换并返回DataFrame（保持向后兼容）
         def convert_labels(example):
             example['sentiment'] = 'positive' if example['label'] == 1 else 'negative'
             return example
@@ -99,13 +97,13 @@ class SentimentTrainer(BaseSentimentTrainer):
         dataset = dataset.map(convert_labels)
         
         train_df = pd.DataFrame({
-            'text': dataset['train']['sentence'],
+            'text': dataset['train']['text'],
             'label': dataset['train']['label'],
             'sentiment': dataset['train']['sentiment']
         })
         
         test_df = pd.DataFrame({
-            'text': dataset['validation']['sentence'],
+            'text': dataset['validation']['text'],
             'label': dataset['validation']['label'],
             'sentiment': dataset['validation']['sentiment']
         })
@@ -118,39 +116,47 @@ class SentimentTrainer(BaseSentimentTrainer):
     
     def get_target_names(self):
         return ['negative', 'positive']
-
-
-def start_tensorboard(log_dir, port=6006):
-    """在后台启动 TensorBoard 服务器"""
-    try:
-        # 检查 tensorboard 是否已安装
-        import tensorboard
-        logger.info(f"启动 TensorBoard，日志目录: {log_dir}, 端口: {port}")
-        logger.info(f"TensorBoard 访问地址: http://localhost:{port}")
+    
+    def tokenize_data(self, train_df=None, test_df=None, dataset=None, max_length=256):
+        """
+        对数据进行tokenization
         
-        # 启动 tensorboard 进程
-        cmd = [sys.executable, "-m", "tensorboard.main", "--logdir", log_dir, "--port", str(port)]
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        Args:
+            train_df: 训练集DataFrame（向后兼容）
+            test_df: 测试集DataFrame（向后兼容）
+            dataset: DatasetDict对象（优化路径，避免多次map）
+            max_length: 最大序列长度
         
-        # 等待一下确保启动成功
-        time.sleep(2)
-        if process.poll() is None:
-            logger.info(f"✓ TensorBoard 已启动在端口 {port}")
-            return process
-        else:
-            logger.warning("TensorBoard 启动失败，可能端口已被占用")
-            return None
-    except ImportError:
-        logger.warning("TensorBoard 未安装，跳过可视化")
-        return None
-    except Exception as e:
-        logger.warning(f"启动 TensorBoard 时出错: {e}")
-        return None
+        Returns:
+            tokenized DatasetDict
+        """
+        from datasets import DatasetDict, Dataset
+        
+        # 如果提供了dataset，直接使用（优化路径：合并所有转换）
+        if dataset is not None:
+            logger.info("使用优化路径：一次性完成标签转换和tokenization...")
+            
+            # 重命名validation为test以保持一致性（在map之前）
+            if 'validation' in dataset and 'test' not in dataset:
+                dataset['test'] = dataset['validation']
+            
+            def convert_and_tokenize(batch):
+                # 合并标签转换和tokenization
+                batch['sentiment'] = ['positive' if lbl == 1 else 'negative' for lbl in batch['label']]
+                tokenized = self.tokenizer(batch["text"], padding=False, truncation=True, max_length=max_length)
+                return tokenized
+            
+            dataset = dataset.map(
+                convert_and_tokenize, 
+                batched=True, 
+                batch_size=32, 
+                num_proc=4, 
+                remove_columns=["text"]
+            )
+            return dataset
+        
+        # 否则使用原有逻辑（向后兼容）
+        return super().tokenize_data(train_df, test_df, max_length=max_length)
 
 
 def run_sst2_experiment(model_name, model_display_name, finetune_method="full", start_tb=True, tb_port=6006):
@@ -160,11 +166,14 @@ def run_sst2_experiment(model_name, model_display_name, finetune_method="full", 
     print(f"{'='*60}")
     
     trainer_obj = SentimentTrainer(model_name, num_labels=2, finetune_method=finetune_method)
-    train_df, test_df = trainer_obj.load_data()
     
     # 先加载模型但不移到GPU（避免tokenize时的CUDA multiprocessing错误）
     trainer_obj.setup_model(move_to_gpu=False)
-    dataset = trainer_obj.tokenize_data(train_df, test_df)
+    
+    # 优化：直接加载Dataset并一次性完成所有转换，避免多次map
+    raw_dataset = trainer_obj.load_data(return_dataset=True)
+    dataset = trainer_obj.tokenize_data(dataset=raw_dataset)
+    
     # tokenize完成后再将模型移到GPU
     trainer_obj.move_model_to_gpu()
     
@@ -195,47 +204,10 @@ def run_sst2_experiment(model_name, model_display_name, finetune_method="full", 
 
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="运行 SST-2 情感分析实验")
-    parser.add_argument(
-        "--methods",
-        type=str,
-        nargs="+",
-        choices=["full", "lora", "prefix", "all"],
-        default=["all"],
-        help="选择微调方法: 'full'（全参数微调）、'lora'（LoRA微调）、'prefix'（Prefix Tuning）、'all'（所有方法，默认）"
-    )
-    parser.add_argument(
-        "--models",
-        type=str,
-        nargs="+",
-        choices=["bert", "deberta", "roberta", "all"],
-        default=["all"],
-        help="选择模型: 'bert'、'deberta'、'roberta'、'all'（所有模型，默认）"
-    )
-    parser.add_argument(
-        "--tensorboard",
-        action="store_true",
-        default=True,
-        help="启动 TensorBoard 可视化（默认启用）"
-    )
-    parser.add_argument(
-        "--tb-port",
-        type=int,
-        default=6006,
-        help="TensorBoard 端口（默认 6006）"
-    )
-    parser.add_argument(
-        "--no-tensorboard",
-        action="store_true",
-        help="禁用 TensorBoard 可视化"
-    )
-    
+    parser = build_common_arg_parser("运行 SST-2 情感分析实验")
     args = parser.parse_args()
     
-    # 处理 tensorboard 参数
-    start_tb = args.tensorboard and not args.no_tensorboard
+    start_tb = tensorboard_should_start(args)
     
     available_models = get_available_models()
     print(f"可用的本地模型: {available_models}")
@@ -247,16 +219,8 @@ if __name__ == "__main__":
         "roberta": ("roberta-base", "RoBERTa")
     }
     
-    if "all" in args.models:
-        models = list(model_map.values())
-    else:
-        models = [model_map[m] for m in args.models if m in model_map]
-    
-    # 解析微调方法选择
-    if "all" in args.methods:
-        finetune_methods = ["full", "lora", "prefix"]
-    else:
-        finetune_methods = args.methods
+    models = parse_selected_models(args.models, model_map)
+    finetune_methods = parse_selected_methods(args.methods)
     
     print(f"\n选择的模型: {[m[1] for m in models]}")
     print(f"选择的微调方法: {finetune_methods}")
@@ -266,15 +230,20 @@ if __name__ == "__main__":
     tb_process = None
     if start_tb:
         results_base_dir = "./results"
-        if os.path.exists(results_base_dir):
-            logger.info(f"启动全局 TensorBoard，监控目录: {results_base_dir}")
-            tb_process = start_tensorboard(results_base_dir, args.tb_port)
-            if tb_process:
-                print(f"\n{'='*60}")
-                print(f"TensorBoard 已启动!")
-                print(f"访问地址: http://localhost:{args.tb_port}")
-                print(f"监控目录: {results_base_dir}")
-                print(f"{'='*60}\n")
+        # 如果目录不存在，创建它（TensorBoard 可以监控空目录，后续会写入日志）
+        if not os.path.exists(results_base_dir):
+            os.makedirs(results_base_dir, exist_ok=True)
+            logger.info(f"创建结果目录: {results_base_dir}")
+        logger.info(f"启动全局 TensorBoard，监控目录: {results_base_dir}")
+        tb_process = start_tensorboard(results_base_dir, args.tb_port)
+        if tb_process:
+            print(f"\n{'='*60}")
+            print(f"TensorBoard 已启动!")
+            print(f"访问地址: http://localhost:{args.tb_port}")
+            print(f"监控目录: {results_base_dir}")
+            print(f"{'='*60}\n")
+        else:
+            logger.warning("TensorBoard 启动失败，请检查端口是否被占用或 TensorBoard 是否已安装")
     
     results = {}
     for model_name, display_name in models:

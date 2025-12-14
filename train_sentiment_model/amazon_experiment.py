@@ -6,19 +6,24 @@ Amazon Reviews 情感分析实验
 """
 
 import os
-import sys
 import logging
 import random
-import glob
-import subprocess
-import threading
-import time
 import numpy as np
 import pandas as pd
 from datasets import load_dataset
 from sklearn.metrics import classification_report
 from sklearn.preprocessing import LabelEncoder
-from experiment_utils import BaseSentimentTrainer, EvalMeta, save_evaluation_results
+from experiment_utils import (
+    BaseSentimentTrainer,
+    EvalMeta,
+    build_common_arg_parser,
+    check_and_get_parquet_files,
+    parse_selected_methods,
+    parse_selected_models,
+    save_evaluation_results,
+    start_tensorboard,
+    tensorboard_should_start,
+)
 from model_config import get_available_models
 
 logging.basicConfig(level=logging.INFO)
@@ -28,32 +33,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(BASE_DIR, "dataset")
-
-
-def _is_git_lfs_pointer(file_path):
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            first_line = f.readline().strip()
-            return first_line == "version https://git-lfs.github.com/spec/v1"
-    except:
-        return False
-
-
-def _check_and_get_parquet_files(data_dir, split_name):
-    pattern = os.path.join(data_dir, f"{split_name}-*.parquet")
-    files = glob.glob(pattern)
-    
-    if not files:
-        raise FileNotFoundError(f"未找到 {split_name} 的 parquet 文件: {pattern}")
-
-    for file_path in files:
-        if _is_git_lfs_pointer(file_path):
-            raise ValueError(
-                f"文件 {file_path} 是 Git LFS 指针文件，不是实际的 parquet 文件。\n"
-                f"请先运行 'git lfs pull' 或手动下载实际的 parquet 文件。"
-            )
-    
-    return files
 
 
 class AmazonReviewsTrainer(BaseSentimentTrainer):
@@ -69,8 +48,8 @@ class AmazonReviewsTrainer(BaseSentimentTrainer):
         if use_local_parquet and os.path.exists(ap_dir):
             try:
                 logger.info("尝试从本地 parquet 文件加载Amazon Reviews数据集...")
-                train_files = _check_and_get_parquet_files(ap_dir, "train")
-                test_files = _check_and_get_parquet_files(ap_dir, "test")
+                train_files = check_and_get_parquet_files(ap_dir, "train")
+                test_files = check_and_get_parquet_files(ap_dir, "test")
 
                 data_files = {
                     "train": train_files,
@@ -208,39 +187,6 @@ class AmazonReviewsTrainer(BaseSentimentTrainer):
         return predictions
 
 
-def start_tensorboard(log_dir, port=6006):
-    """在后台启动 TensorBoard 服务器"""
-    try:
-        # 检查 tensorboard 是否已安装
-        import tensorboard
-        logger.info(f"启动 TensorBoard，日志目录: {log_dir}, 端口: {port}")
-        logger.info(f"TensorBoard 访问地址: http://localhost:{port}")
-        
-        # 启动 tensorboard 进程
-        cmd = [sys.executable, "-m", "tensorboard.main", "--logdir", log_dir, "--port", str(port)]
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        # 等待一下确保启动成功
-        time.sleep(2)
-        if process.poll() is None:
-            logger.info(f"✓ TensorBoard 已启动在端口 {port}")
-            return process
-        else:
-            logger.warning("TensorBoard 启动失败，可能端口已被占用")
-            return None
-    except ImportError:
-        logger.warning("TensorBoard 未安装，跳过可视化")
-        return None
-    except Exception as e:
-        logger.warning(f"启动 TensorBoard 时出错: {e}")
-        return None
-
-
 def run_amazon_experiment(model_name, model_display_name, finetune_method="full", start_tb=True, tb_port=6006):
     print(f"\n{'='*60}")
     print(f"开始 {model_display_name} 在 Amazon Reviews 数据集上的实验")
@@ -283,47 +229,10 @@ def run_amazon_experiment(model_name, model_display_name, finetune_method="full"
 
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="运行 Amazon Reviews 情感分析实验")
-    parser.add_argument(
-        "--methods",
-        type=str,
-        nargs="+",
-        choices=["full", "lora", "prefix", "all"],
-        default=["all"],
-        help="选择微调方法: 'full'（全参数微调）、'lora'（LoRA微调）、'prefix'（Prefix Tuning）、'all'（所有方法，默认）"
-    )
-    parser.add_argument(
-        "--models",
-        type=str,
-        nargs="+",
-        choices=["bert", "deberta", "roberta", "all"],
-        default=["all"],
-        help="选择模型: 'bert'、'deberta'、'roberta'、'all'（所有模型，默认）"
-    )
-    parser.add_argument(
-        "--tensorboard",
-        action="store_true",
-        default=True,
-        help="启动 TensorBoard 可视化（默认启用）"
-    )
-    parser.add_argument(
-        "--tb-port",
-        type=int,
-        default=6006,
-        help="TensorBoard 端口（默认 6006）"
-    )
-    parser.add_argument(
-        "--no-tensorboard",
-        action="store_true",
-        help="禁用 TensorBoard 可视化"
-    )
-    
+    parser = build_common_arg_parser("运行 Amazon Reviews 情感分析实验")
     args = parser.parse_args()
     
-    # 处理 tensorboard 参数
-    start_tb = args.tensorboard and not args.no_tensorboard
+    start_tb = tensorboard_should_start(args)
     
     available_models = get_available_models()
     print(f"可用的本地模型: {available_models}")
@@ -335,16 +244,8 @@ if __name__ == "__main__":
         "roberta": ("roberta-base", "RoBERTa")
     }
     
-    if "all" in args.models:
-        models = list(model_map.values())
-    else:
-        models = [model_map[m] for m in args.models if m in model_map]
-    
-    # 解析微调方法选择
-    if "all" in args.methods:
-        finetune_methods = ["full", "lora", "prefix"]
-    else:
-        finetune_methods = args.methods
+    models = parse_selected_models(args.models, model_map)
+    finetune_methods = parse_selected_methods(args.methods)
     
     print(f"\n选择的模型: {[m[1] for m in models]}")
     print(f"选择的微调方法: {finetune_methods}")
@@ -354,15 +255,20 @@ if __name__ == "__main__":
     tb_process = None
     if start_tb:
         results_base_dir = "./results"
-        if os.path.exists(results_base_dir):
-            logger.info(f"启动全局 TensorBoard，监控目录: {results_base_dir}")
-            tb_process = start_tensorboard(results_base_dir, args.tb_port)
-            if tb_process:
-                print(f"\n{'='*60}")
-                print(f"TensorBoard 已启动!")
-                print(f"访问地址: http://localhost:{args.tb_port}")
-                print(f"监控目录: {results_base_dir}")
-                print(f"{'='*60}\n")
+        # 如果目录不存在，创建它（TensorBoard 可以监控空目录，后续会写入日志）
+        if not os.path.exists(results_base_dir):
+            os.makedirs(results_base_dir, exist_ok=True)
+            logger.info(f"创建结果目录: {results_base_dir}")
+        logger.info(f"启动全局 TensorBoard，监控目录: {results_base_dir}")
+        tb_process = start_tensorboard(results_base_dir, args.tb_port)
+        if tb_process:
+            print(f"\n{'='*60}")
+            print(f"TensorBoard 已启动!")
+            print(f"访问地址: http://localhost:{args.tb_port}")
+            print(f"监控目录: {results_base_dir}")
+            print(f"{'='*60}\n")
+        else:
+            logger.warning("TensorBoard 启动失败，请检查端口是否被占用或 TensorBoard 是否已安装")
     
     results = {}
     for model_name, display_name in models:
