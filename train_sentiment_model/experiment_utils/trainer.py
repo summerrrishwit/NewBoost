@@ -24,6 +24,10 @@ from transformers import (
     TrainingArguments,
 )
 
+# 设置 CUDA 调试环境变量（如果未设置）
+if "CUDA_LAUNCH_BLOCKING" not in os.environ:
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
 from model_config import get_model_path
 from gpu_utils import get_available_gpus, setup_multi_gpu
 from .peft_utils import PEFT_AVAILABLE, setup_lora_model, setup_prefix_tuning_model
@@ -60,6 +64,8 @@ class BaseSentimentTrainer(ABC):
 
     def setup_model(self, move_to_gpu=True, **kwargs):
         """
+        设置模型和分词器
+
         Args:
             move_to_gpu: 是否立即将模型移动到GPU（默认True）
             **kwargs: 额外的模型设置参数
@@ -107,6 +113,7 @@ class BaseSentimentTrainer(ABC):
             logger.info("模型将保持在CPU上，稍后可通过 move_model_to_gpu() 移动到GPU")
 
     def move_model_to_gpu(self):
+        """将模型移动到GPU"""
         if self.model is None:
             raise ValueError("模型尚未初始化，请先调用 setup_model()")
 
@@ -123,6 +130,12 @@ class BaseSentimentTrainer(ABC):
 
     def tokenize_data(self, train_df, test_df, max_length=256):
         logger.info("正在进行数据预处理...")
+        
+        # 确保标签是整数类型
+        train_df = train_df.copy()
+        test_df = test_df.copy()
+        train_df["label"] = train_df["label"].astype(int)
+        test_df["label"] = test_df["label"].astype(int)
 
         def tokenize(batch):
             return self.tokenizer(batch["text"], padding=False, truncation=True, max_length=max_length)
@@ -132,6 +145,13 @@ class BaseSentimentTrainer(ABC):
         dataset = DatasetDict({"train": train_dataset, "test": test_dataset})
 
         dataset = dataset.map(tokenize, batched=True, batch_size=32, num_proc=4, remove_columns=["text"])
+        
+        # 确保 Dataset 中的标签也是整数类型
+        def ensure_int_labels(example):
+            example["label"] = int(example["label"])
+            return example
+        
+        dataset = dataset.map(ensure_int_labels, desc="确保标签为整数类型")
 
         return dataset
 
@@ -144,6 +164,65 @@ class BaseSentimentTrainer(ABC):
         f1_macro = f1_score(labels, preds, average="macro")
 
         return {"accuracy": acc, "f1_weighted": f1_weighted, "f1_macro": f1_macro}
+
+    def validate_labels(self, dataset):
+        """验证数据集中的标签值是否在有效范围内 [0, num_labels-1]
+        
+        注意：如果某个 split 的所有标签都是 -1（通常表示测试集无标签），
+        会跳过该 split 的验证。
+        """
+        logger.info("验证数据集标签...")
+        
+        for split_name, split_data in dataset.items():
+            if "label" not in split_data.column_names:
+                logger.warning(f"{split_name} 数据集中没有 'label' 列，跳过验证")
+                continue
+                
+            labels = split_data["label"]
+            
+            # 转换为 numpy 数组以便检查
+            if isinstance(labels, list):
+                labels_array = np.array(labels)
+            else:
+                labels_array = np.array(list(labels))
+            
+            # 检查标签值范围
+            min_label = int(labels_array.min())
+            max_label = int(labels_array.max())
+            unique_labels = sorted(np.unique(labels_array).tolist())
+            
+            logger.info(f"{split_name} 标签统计: min={min_label}, max={max_label}, unique={unique_labels}, count={len(labels_array)}")
+            
+            # 如果所有标签都是 -1，说明这是无标签的测试集，跳过验证
+            if len(unique_labels) == 1 and unique_labels[0] == -1:
+                logger.info(f"⚠ {split_name} 数据集的所有标签都是 -1（无标签测试集），跳过验证")
+                continue
+            
+            # 验证标签范围
+            if min_label < 0:
+                raise ValueError(
+                    f"{split_name} 数据集中存在负标签值: {min_label}。"
+                    f"标签值必须在 [0, {self.num_labels-1}] 范围内。"
+                    f"如果这是无标签的测试集，所有标签应该都是 -1。"
+                )
+            
+            if max_label >= self.num_labels:
+                raise ValueError(
+                    f"{split_name} 数据集中存在超出范围的标签值: {max_label}。"
+                    f"模型配置为 {self.num_labels} 个类别，标签值必须在 [0, {self.num_labels-1}] 范围内。"
+                    f"发现的唯一标签值: {unique_labels}"
+                )
+            
+            # 检查是否有非整数标签
+            if not np.all(labels_array == labels_array.astype(int)):
+                raise ValueError(
+                    f"{split_name} 数据集中存在非整数标签值。"
+                    f"所有标签必须是整数。"
+                )
+            
+            logger.info(f"✓ {split_name} 标签验证通过: 标签值在 [0, {self.num_labels-1}] 范围内")
+        
+        logger.info("所有数据集标签验证通过")
 
     def get_training_args(self, output_dir, **kwargs):
         num_gpus = len(self.gpu_ids) if self.gpu_ids else 0
@@ -198,6 +277,9 @@ class BaseSentimentTrainer(ABC):
 
     def train(self, dataset, output_dir, **training_kwargs):
         logger.info("开始训练模型...")
+        
+        # 在训练前验证标签
+        self.validate_labels(dataset)
 
         training_args = self.get_training_args(output_dir, **training_kwargs)
         data_collator = DataCollatorWithPadding(tokenizer=self.tokenizer)

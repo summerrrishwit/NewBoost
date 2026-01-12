@@ -136,11 +136,31 @@ class SentimentTrainer(BaseSentimentTrainer):
         if dataset is not None:
             logger.info("使用优化路径：一次性完成标签转换和tokenization...")
             
+            # 检查是否有无标签的测试集（标签全为 -1）
+            if 'test' in dataset:
+                test_labels = dataset['test']['label']
+                if isinstance(test_labels, list):
+                    unique_test_labels = set(test_labels)
+                else:
+                    unique_test_labels = set(list(test_labels))
+                
+                # 如果测试集标签全为 -1，说明是无标签测试集，移除它
+                if len(unique_test_labels) == 1 and -1 in unique_test_labels:
+                    logger.info("检测到无标签的测试集（标签全为 -1），将从训练数据集中移除")
+                    # 创建新的 DatasetDict，排除 test split
+                    new_splits = {k: v for k, v in dataset.items() if k != 'test'}
+                    dataset = DatasetDict(new_splits)
+            
             # 重命名validation为test以保持一致性（在map之前）
             if 'validation' in dataset and 'test' not in dataset:
-                dataset['test'] = dataset['validation']
+                # 创建新的 DatasetDict，将 validation 重命名为 test
+                new_splits = {k: v for k, v in dataset.items() if k != 'validation'}
+                new_splits['test'] = dataset['validation']
+                dataset = DatasetDict(new_splits)
             
             def convert_and_tokenize(batch):
+                # 确保标签是整数类型
+                batch['label'] = [int(lbl) for lbl in batch['label']]
                 # 合并标签转换和tokenization
                 batch['sentiment'] = ['positive' if lbl == 1 else 'negative' for lbl in batch['label']]
                 tokenized = self.tokenizer(batch["text"], padding=False, truncation=True, max_length=max_length)
